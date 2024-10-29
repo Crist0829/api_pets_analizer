@@ -15,7 +15,7 @@ parameters = pika.ConnectionParameters('localhost', 5672, '/', credentials)
 connection = pika.BlockingConnection(parameters)
 channel = connection.channel()
 channel.queue_declare(queue='image.uploaded', durable=True)
-channel.queue_declare(queue='animal.identified', durable=True)
+channel.queue_declare(queue='pet.identified', durable=True)
 
 def download_image(url):
     response = requests.get(url)
@@ -35,13 +35,18 @@ def classify_image(image_url):
     predictions = model.predict(input_array)
     decoded_predictions = tf.keras.applications.mobilenet_v2.decode_predictions(predictions, top=5)[0]
 
+    print(decoded_predictions)
+
     labels = [label.lower() for (_, label, _) in decoded_predictions]
     if any("cat" in label for label in labels):
-        return "cat"
+        pet_type = "cat"
     elif any("dog" in label for label in labels):
-        return "dog"
+        pet_type = "dog"
     else:
-        return "unknown"
+        return "unknown", None
+
+    breed = decoded_predictions[0][1] if decoded_predictions else "unknown"
+    return pet_type, breed
 
 def callback(ch, method, properties, body):
     try:
@@ -51,20 +56,28 @@ def callback(ch, method, properties, body):
             return
 
         image_url = message['data']['imageUrl']
-        classification = classify_image(image_url)
+        pet_type, breed = classify_image(image_url)
+
+        if pet_type == 'unknown':
+            print("Unknown pet type. Skipping.")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            return
 
         result_payload = {
+            "name": message['data'].get('name'),
             "petId": message['data'].get('petId'),
             "userId": message['data'].get('userId'),
-            "type": classification
+            "imageUrl": image_url,
+            "type": pet_type,
+            "breed": breed
         }
 
         channel.basic_publish(
             exchange='',
-            routing_key='animal.identified',
+            routing_key='pet.identified',
             body=json.dumps(result_payload)
         )
-        print(f"Resultado enviado: {result_payload}")
+        print(f"Sent Data: {result_payload}")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -72,5 +85,5 @@ def callback(ch, method, properties, body):
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 channel.basic_consume(queue='image.uploaded', on_message_callback=callback)
-print('Wait messages from RabbitMQ...')
+print('Waiting for messages from RabbitMQ...')
 channel.start_consuming()
